@@ -4,3 +4,6 @@
 
 # do not include data files in the repo
 data/
+
+# ignore venv
+*venv/
