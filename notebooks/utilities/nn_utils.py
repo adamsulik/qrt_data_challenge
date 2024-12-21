@@ -16,13 +16,16 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from pprint import pprint
 
-def choose_device():
-    if torch.cuda.is_available():
-        device = torch.device('cuda')
-    elif torch.backends.mps.is_available():
-        device = torch.device('mps')
+def choose_device(device=None):
+    if device is None:
+        if torch.cuda.is_available():
+            device = torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            device = torch.device('mps')
+        else:
+            device = torch.device('cpu')
     else:
-        device = torch.device('cpu')
+        device = torch.device(device)
     return device
 
 def _set_seed(seed=42):
@@ -68,14 +71,14 @@ class BinaryClassificationDataset(Dataset):
 
 
 class DeepNeuralNetwork(nn.Module):
-    def __init__(self, input_dim, hidden_layers=[64, 32, 16], dropout_rate=0.3):
+    def __init__(self, input_dim, hidden_layers=[64, 32, 16], dropout_rate=[0.4, 0.3, 0.2]):
         """
         Deep Neural Network for Binary Classification
 
         Args:
             input_dim (int): Number of input features
             hidden_layers (list): Number of neurons in each hidden layer
-            dropout_rate (float): Dropout probability for regularization
+            dropout_rate (list): Dropout rate for each hidden layer
         """
         super(DeepNeuralNetwork, self).__init__()
 
@@ -86,7 +89,7 @@ class DeepNeuralNetwork(nn.Module):
             layers.append(nn.Linear(layer_sizes[i], layer_sizes[i + 1]))
             layers.append(nn.BatchNorm1d(layer_sizes[i + 1]))
             layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout_rate))
+            layers.append(nn.Dropout(dropout_rate[i]))
 
         # Final layer for binary classification
         layers.append(nn.Linear(hidden_layers[-1], 1))
@@ -172,7 +175,84 @@ def evaluate_model(model, val_loader, criterion, device):
     return metrics
 
 
-def run_k_fold_training(X, y, n_splits=4, epochs=50, batch_size=32, random_seed=42, print_every_epoch=10):
+def date_based_kfold_split(n_splits, dates, shuffle=True):
+    """
+    Create K-Fold splits based on dates
+    """
+    # Get unique dates and sort them
+    unique_dates = np.unique(dates)
+    unique_dates.sort()
+
+    # Split the unique dates into n_splits
+    dates_splits = np.array_split(unique_dates, n_splits)
+
+    for i in range(len(dates_splits)):
+        # Validation dates for the current split
+        val_dates = dates_splits[i]
+
+        # Training dates are all the dates before the current validation dates
+        remaining_splits = np.delete(np.arange(n_splits), i)
+        train_dates = np.concatenate([dates_splits[j] for j in remaining_splits])
+
+        # Create masks to get train and test indices
+        train_indices = np.where(np.isin(dates, train_dates))[0]
+        val_indices = np.where(np.isin(dates, val_dates))[0]
+        if shuffle:
+            np.random.shuffle(train_indices)
+
+        yield train_indices, val_indices
+
+
+import numpy as np
+
+
+def date_based_train_test_split(dates, test_size=0.2, shuffle=True):
+    """
+    Create a train-test split based on unique dates
+
+    Parameters:
+    -----------
+    dates : array-like
+        Array of dates corresponding to each data point
+    test_size : float, optional (default=0.2)
+        Proportion of unique dates to use for testing
+    shuffle : bool, optional (default=True)
+        Whether to shuffle the training indices
+
+    Returns:
+    --------
+    train_indices : numpy.ndarray
+        Indices for the training set
+    test_indices : numpy.ndarray
+        Indices for the test set
+    """
+    # Get unique dates and sort them
+    unique_dates = np.unique(dates)
+    unique_dates.sort()
+
+    # Calculate the number of test dates
+    n_test_dates = max(1, int(len(unique_dates) * test_size))
+
+    # Split the unique dates into train and test
+    test_dates = unique_dates[-n_test_dates:]
+    train_dates = unique_dates[:-n_test_dates]
+
+    # Create masks to get train and test indices
+    train_indices = np.where(np.isin(dates, train_dates))[0]
+    test_indices = np.where(np.isin(dates, test_dates))[0]
+
+    # Shuffle training indices if requested
+    if shuffle:
+        np.random.shuffle(train_indices)
+
+    return train_indices, test_indices
+
+
+def run_k_fold_training(X, y, n_splits=4, epochs=50, batch_size=32,
+                        random_seed=42, print_every_epoch=10,
+                        num_workers=0, device=None, lr=0.001,
+                        model_hidden_layers=[64, 32, 16], dropout_rate=[0.4, 0.3, 0.2],
+                        split_type='stratified', date_array=None):
     """
     Perform K-Fold Cross-Validation
 
@@ -183,22 +263,41 @@ def run_k_fold_training(X, y, n_splits=4, epochs=50, batch_size=32, random_seed=
         epochs (int): Number of training epochs
         batch_size (int): Training batch size
         random_seed (int): Random seed for reproducibility
+        print_every_epoch (int): Print metrics every n epochs
+        num_workers (int): Number of workers for data loading
+        device (str): Device to train on (cpu, cuda, mps)
+        lr (float): Learning rate for optimizer
+        model_hidden_layers (list): List of hidden layer sizes
+        dropout_rate (float): Dropout rate for regularization
+        split_type (str): Type of split (stratified, normal) or date based split
+        date_array (numpy.ndarray): Array of dates for date-based split
 
     Returns:
         list: Cross-validation results
     """
+    assert split_type in ['stratified', 'normal', 'date'], "Invalid split type"
     _set_seed(random_seed)
 
     # choose device cuda - mps - cpu
-    device = choose_device()
+    device = choose_device(device)
+
+    # if dropout rate is a single value, convert to list
+    if not isinstance(dropout_rate, list):
+        dropout_rate = [dropout_rate] * len(model_hidden_layers)
 
     print(f"Training on {device}")
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_seed)
+    if split_type != 'date':
+        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_seed)
+        split = skf.split(X, y)
+    else:
+        split = date_based_kfold_split(n_splits, dates=date_array, shuffle=True)
+
 
     cv_results = []
 
-    for fold, (train_index, val_index) in enumerate(skf.split(X, y), 1):
-        print(f"\nFold {fold}")
+    for fold, (train_index, val_index) in enumerate(split, 1):
+        print(f"\nFold {fold}/{n_splits}")
+        print(f"Train/Val ratio: {len(train_index)/len(val_index):.2f}")
         start_time = time.time()
 
         # Split data
@@ -215,36 +314,50 @@ def run_k_fold_training(X, y, n_splits=4, epochs=50, batch_size=32, random_seed=
         train_dataset = BinaryClassificationDataset(X_train_tensor, y_train_tensor)
         val_dataset = BinaryClassificationDataset(X_val_tensor, y_val_tensor)
 
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=num_workers)
 
         # Initialize model
-        model = DeepNeuralNetwork(input_dim=X_train.shape[1]).to(device)
+        model = DeepNeuralNetwork(
+            hidden_layers=model_hidden_layers,
+            input_dim=X_train.shape[1],
+            dropout_rate=dropout_rate,
+        ).to(device)
 
         # Loss and optimizer
         criterion = nn.BCELoss()
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        optimizer = optim.Adam(model.parameters(), lr=lr)
+
+        best_val_acc = 0
+        best_metrics = None
 
         # Training loop
         for epoch in range(1, epochs + 1):
             train_loss, train_acc = train_model(model, train_loader, criterion, optimizer, device)
+            epoch_val = evaluate_model(model, val_loader, criterion, device)
+            val_acc = epoch_val['accuracy']
+            if val_acc > best_val_acc:
+                best_metrics = epoch_val
+                best_metrics['epoch'] = epoch
+                best_metrics['train_loss'] = train_loss
+                best_metrics['train_acc'] = train_acc
+                best_metrics['fold'] = fold
+                best_val_acc = val_acc
 
             if epoch % print_every_epoch == 0:
                 # print with time
                 current_strf_time = time.strftime("%H:%M:%S", time.localtime())
                 print(f"{current_strf_time}\t  -- Epoch {epoch}: "
                       f"Training Loss = {train_loss:.4f}"
-                      f" | Training Accuracy = {train_acc:.4f}")
+                      f" | Training Accuracy = {train_acc:.4f}"
+                      f" | Validation Accuracy = {val_acc:.4f}")
 
-        # Evaluate model
-        metrics = evaluate_model(model, val_loader, criterion, device)
-        metrics['fold'] = fold
         print(f'Computation time: {time.time() - start_time:.2f} seconds')
 
-        cv_results.append(metrics)
+        cv_results.append(best_metrics)
 
         print("\nValidation Metrics:")
-        for metric, value in metrics.items():
+        for metric, value in best_metrics.items():
             if metric != 'fold':
                 print(f"{metric}: {value}")
 
@@ -260,7 +373,12 @@ def full_dataset_training(
         val_split: float = 0.2,
         batch_size: int = 32,
         epochs: int = 100,
-        seed: int = 42
+        seed: int = 42,
+        print_every_epoch: int = 10,
+        num_workers=0, device=None, lr=0.001,
+        model_hidden_layers=[64, 32, 16], dropout_rate=0.3,
+        split_type='stratified', date_array=None,
+        crit_metric_name = 'accuracy',
 ):
     """
     Train on full dataset with checkpointing
@@ -275,20 +393,36 @@ def full_dataset_training(
         batch_size (int): Training batch size
         epochs (int): Number of training epochs
         seed (int): Random seed
+        print_every_epoch (int): Print metrics every n epochs
+        num_workers (int): Number of workers for data loading
+        device (str): Device to train on (cpu, cuda, mps)
+        lr (float): Learning rate for optimizer
+        model_hidden_layers (list): List of hidden layer sizes
+        dropout_rate (float): Dropout rate for regularization
+        split_type (str): Type of split (stratified, normal) or date based split, options:
+        ar['stratified', 'normal', 'date']
+        date_array (numpy.ndarray): Array of dates for date-based split
+        crit_metric_name (str): Metric to use for checkpointing
 
     Returns:
         dict: Best model checkpoint
     """
+    assert split_type in ['stratified', 'normal', 'date'], "Invalid split type"
     # Ensure reproducibility
     _set_seed(seed)
 
     # Determine device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = choose_device(device)
 
     # Split data into train and validation sets
-    X_train, X_val, Y_train, Y_val = train_test_split(
-        X, Y, test_size=val_split, random_state=seed, stratify=Y
-    )
+    if split_type != 'date':
+        X_train, X_val, Y_train, Y_val = train_test_split(
+            X, Y, test_size=val_split, random_state=seed, stratify=Y
+        )
+    else:
+        train_idx, val_idx = date_based_train_test_split(date_array, test_size=val_split)
+        X_train, X_val = X[train_idx], X[val_idx]
+        Y_train, Y_val = Y[train_idx], Y[val_idx]
 
     # Standardize numerical features
     scaler = StandardScaler()
@@ -313,18 +447,22 @@ def full_dataset_training(
     train_dataset = BinaryClassificationDataset(X_train_tensor, y_train_tensor)
     val_dataset = BinaryClassificationDataset(X_val_tensor, y_val_tensor)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     # Initialize model
-    model = DeepNeuralNetwork(input_dim=X.shape[1]).to(device)
+    model = DeepNeuralNetwork(
+        hidden_layers=model_hidden_layers,
+        input_dim=X_train.shape[1],
+        dropout_rate=dropout_rate,
+    ).to(device)
 
     # Loss and optimizer
     criterion = nn.BCELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
 
     # Training setup
-    best_val_loss = np.inf
+    best_crit_metric = 0
     train_loss_arr, train_acc_arr = [], []
     val_loss_arr, val_acc_arr = [], []
     best_model_checkpoint = None
@@ -340,9 +478,11 @@ def full_dataset_training(
         # validate
         val_metrics = evaluate_model(model, val_loader, criterion, device)
         val_loss, val_acc = val_metrics['loss'], val_metrics['accuracy']
+        crit_metric = val_metrics[crit_metric_name]
+
 
         # Update best model if loss improves
-        if val_loss < best_val_loss:
+        if crit_metric > best_crit_metric:
             best_model_checkpoint = {
                 'epoch': epoch,
                 'loss': train_loss,
@@ -353,7 +493,7 @@ def full_dataset_training(
                 'val_loss': val_loss,
                 'val_acc': val_acc,
             }
-            best_val_loss = val_loss
+            best_crit_metric = crit_metric
 
         # Store training and validation metrics
         train_loss_arr.append(train_loss)
@@ -362,7 +502,7 @@ def full_dataset_training(
         val_acc_arr.append(val_acc)
 
         # Print and save periodically
-        if epoch % 10 == 0:
+        if epoch % print_every_epoch == 0:
             current_strf_time = time.strftime("%H:%M:%S", time.localtime())
             print(f"{current_strf_time}\t  -- Epoch {epoch}: \t"
                   f"Training Loss = {train_loss:.4f}"
@@ -390,7 +530,8 @@ def load_model_and_predict(
         checkpoint_path,
         X_eval,
         numerical_columns,
-        batch_size=32
+        batch_size=32,
+        model_hidden_layers=[64, 32, 16],
 ):
     """
     Load saved model and run inference on evaluation dataset
@@ -400,6 +541,7 @@ def load_model_and_predict(
         X_eval (numpy.ndarray): Evaluation features
         numerical_columns (list): Names of numerical columns for scaling
         batch_size (int): Inference batch size
+        model_hidden_layers (list): List of hidden layer
 
     Returns:
         numpy.ndarray: Predicted probabilities
@@ -419,7 +561,7 @@ def load_model_and_predict(
     X_eval_tensor = torch.FloatTensor(X_eval_scaled).to(device)
 
     # Recreate model and load state dict
-    model = DeepNeuralNetwork(input_dim=X_eval.shape[1]).to(device)
+    model = DeepNeuralNetwork(input_dim=X_eval.shape[1], hidden_layers=model_hidden_layers).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
