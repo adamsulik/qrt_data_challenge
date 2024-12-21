@@ -60,7 +60,7 @@
   - Simpler models can outperform if they generalize better to evaluation scenarios.  
 - **Future Directions**:  
   - Regularization techniques (e.g., dropout, weight decay) and robust cross-validation to mitigate overfitting.  
-  - Simplify feature engineering to focus on the most reliable signals (e.g., momentum, volatility).  
+  - Simplify feature engineering to focus on the most reliable signals.  
   - Explore hybrid approaches that balance simplicity with market structure insights.
   - Explore correlation related features like extended halflife to capture the long term correlation between stocks.
 ---
