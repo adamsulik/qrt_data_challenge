@@ -7,3 +7,8 @@ data/
 
 # ignore venv
 *venv/
+
+# ignore outputs and checkpoints
+outputs/
+notebooks/checkpoints
+notebooks/utilities/checkpoints
