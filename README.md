@@ -53,7 +53,7 @@ I have tested several methods to predict whether a stock’s next return will be
 ---
 
 ## 4. Conclusion
-Our experiments show that while neural networks (MLPs, LSTMs) and advanced graph-based methods (Node2Vec) can capture rich market structures, simpler approaches often suffice to benchmark new feature ideas. Going forward, the most promising avenue lies in:
+My experiments show that while neural networks (MLPs, LSTMs) and advanced graph-based methods (Node2Vec) can capture rich market structures, simpler approaches often suffice to benchmark new feature ideas. Going forward, the most promising avenue lies in:
 - Refining how we group stocks (including sector-level embeddings).  
 - Extracting cross-sectional insights on each trading date via correlation-based or eigenvector-based signals.  
 - Iterating swiftly with classification trees to validate new feature concepts before refining model architectures.
