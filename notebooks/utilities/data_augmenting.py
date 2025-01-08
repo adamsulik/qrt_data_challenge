@@ -134,6 +134,6 @@ def process_date_group(group_df, halflife, numret_cols=5, cluster_threshold=2.0,
     group_df = group_df.merge(grouped_avg, on='STOCK')
 
     ret_cols.sort(key=lambda x: int(x.split('_')[-1]))
-    group_df.loc[:, ret_cols] = group_df[ret_cols].values / group_df['ret_std'].fillna(1).values[:, np.newaxis]
+    group_df.loc[:, ret_cols] = group_df[ret_colsutlda].values / group_df['ret_std'].fillna(1).values[:, np.newaxis]
 
     return group_df
